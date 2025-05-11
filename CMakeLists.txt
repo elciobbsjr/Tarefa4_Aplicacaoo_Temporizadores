@@ -46,7 +46,8 @@ pico_enable_stdio_usb(Tarefa4_Aplicacaoo_Temporizadores 1)
 
 # Add the standard library to the build
 target_link_libraries(Tarefa4_Aplicacaoo_Temporizadores
-        pico_stdlib)
+        pico_stdlib
+        hardware_timer)
 
 # Add the standard include files to the build
 target_include_directories(Tarefa4_Aplicacaoo_Temporizadores PRIVATE
