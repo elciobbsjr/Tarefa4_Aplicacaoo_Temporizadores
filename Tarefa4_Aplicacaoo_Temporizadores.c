@@ -1,21 +1,27 @@
+#include <stdio.h>
+#include <string.h>
 #include "pico/stdlib.h"
 #include "hardware/gpio.h"
+#include "hardware/i2c.h"
 #include "hardware/timer.h"
-#include <stdio.h>
+#include "inc/ssd1306.h"
 
 #define LED_VERMELHO 13
 #define LED_VERDE    11
-#define BOTAO_A      5  // Sentido Centro
-#define BOTAO_B      6  // Sentido Bairro
+#define BOTAO_A      5
+#define BOTAO_B      6
 #define BUZZER_A     21
 #define BUZZER_B     10
+
+const uint I2C_SDA = 14;
+const uint I2C_SCL = 15;
 
 typedef enum { 
     ESTADO_VERMELHO, 
     ESTADO_VERDE, 
     ESTADO_AMARELO, 
-    ESTADO_PEDESTRE_A,  // Travessia Centro
-    ESTADO_PEDESTRE_B   // Travessia Bairro
+    ESTADO_PEDESTRE_A, 
+    ESTADO_PEDESTRE_B 
 } estado_t;
 
 volatile estado_t estado_atual = ESTADO_VERMELHO;
@@ -35,12 +41,34 @@ repeating_timer_t timer;
 repeating_timer_t contagem_timer;
 repeating_timer_t buzzer_timer;
 
-void buzzer_off_callback() {
-    gpio_put(current_buzzer_gpio, 0);
+void atualizar_display(const char* status, int contagem) {
+    struct render_area area = {
+        .start_column = 0,
+        .end_column = ssd1306_width - 1,
+        .start_page = 0,
+        .end_page = ssd1306_n_pages - 1
+    };
+
+    calculate_render_area_buffer_length(&area);
+
+    uint8_t buffer[ssd1306_buffer_length];
+    memset(buffer, 0, ssd1306_buffer_length);
+
+    // Exibir status
+    ssd1306_draw_string(buffer, 0, 0, (char*)status);
+
+    // Exibir contagem, se houver
+    if (contagem > 0) {
+        char countdown_str[16];
+        sprintf(countdown_str, "Tempo: %d", contagem);
+        ssd1306_draw_string(buffer, 0, 16, countdown_str);  // Segunda linha
+    }
+
+    render_on_display(buffer, &area);
 }
 
-bool buzzer_off_timer_callback(repeating_timer_t *rt) {
-    buzzer_off_callback();
+bool buzzer_off_callback(repeating_timer_t *rt) {
+    gpio_put(current_buzzer_gpio, 0);
     return false;
 }
 
@@ -49,7 +77,7 @@ void buzzer_pulse() {
     usar_buzzer_a = !usar_buzzer_a;
 
     gpio_put(current_buzzer_gpio, 1);
-    add_repeating_timer_ms(-200, buzzer_off_timer_callback, NULL, &buzzer_timer);
+    add_repeating_timer_ms(-200, buzzer_off_callback, NULL, &buzzer_timer);
 }
 
 void botao_callback(uint gpio, uint32_t events) {
@@ -63,44 +91,54 @@ void botao_callback(uint gpio, uint32_t events) {
 }
 
 void atualiza_semaforo(estado_t estado) {
+    const char* display_status = "";
+
     switch (estado) {
         case ESTADO_VERMELHO:
             gpio_put(LED_VERMELHO, 1);
             gpio_put(LED_VERDE, 0);
-            printf("Sinal: Vermelho\n");
+            display_status = "Sinal: Vermelho";
             break;
         case ESTADO_VERDE:
             gpio_put(LED_VERMELHO, 0);
             gpio_put(LED_VERDE, 1);
-            printf("Sinal: Verde\n");
+            display_status = "Sinal: Verde";
             break;
         case ESTADO_AMARELO:
             gpio_put(LED_VERMELHO, 1);
             gpio_put(LED_VERDE, 1);
-            printf("Sinal: Amarelo\n");
+            display_status = "Sinal: Amarelo";
             break;
         case ESTADO_PEDESTRE_A:
             gpio_put(LED_VERMELHO, 1);
             gpio_put(LED_VERDE, 0);
-            printf("Travessia: Sentido Centro\n");
+            display_status = "Travessia: Centro";
             break;
         case ESTADO_PEDESTRE_B:
             gpio_put(LED_VERMELHO, 1);
             gpio_put(LED_VERDE, 0);
-            printf("Travessia: Sentido Bairro\n");
+            display_status = "Travessia: Bairro";
             break;
     }
+
+    atualizar_display(display_status, contagem_regressiva);
+    printf("%s\n", display_status);
 }
 
 bool contagem_callback(repeating_timer_t *rt) {
     if (contagem_regressiva > 0) {
         printf("Contagem Regressiva: %d\n", contagem_regressiva);
         buzzer_pulse();
+
+        atualizar_display(
+            (estado_atual == ESTADO_PEDESTRE_A) ? "Travessia: Centro" : "Travessia: Bairro", 
+            contagem_regressiva
+        );
         contagem_regressiva--;
         return true;
     } else {
         aguardando_fim_contagem = false;
-        add_repeating_timer_ms(-1, timer_callback, NULL, &timer); // Continua fluxo normal
+        add_repeating_timer_ms(-1, timer_callback, NULL, &timer);
         return false;
     }
 }
@@ -111,7 +149,6 @@ bool timer_callback(repeating_timer_t *rt) {
     if (aguardando_fim_contagem) return false;
 
     if (!em_travessia && (pedido_A || pedido_B)) {
-        // Atende primeiro quem pediu
         if (pedido_A) {
             estado_atual = ESTADO_AMARELO;
             atualiza_semaforo(ESTADO_AMARELO);
@@ -125,12 +162,12 @@ bool timer_callback(repeating_timer_t *rt) {
             pedido_B = false;
             estado_atual = ESTADO_PEDESTRE_B;
         }
-        add_repeating_timer_ms(-3000, timer_callback, NULL, &timer); // 3s amarelo
+        add_repeating_timer_ms(-3000, timer_callback, NULL, &timer);
     } 
     else if (em_travessia) {
         atualiza_semaforo(estado_atual);
 
-        add_repeating_timer_ms(-5000, timer_callback, NULL, &timer); // 5s antes da contagem
+        add_repeating_timer_ms(-5000, timer_callback, NULL, &timer);
 
         contagem_regressiva = 5;
         aguardando_fim_contagem = true;
@@ -151,9 +188,6 @@ bool timer_callback(repeating_timer_t *rt) {
                 atualiza_semaforo(ESTADO_AMARELO);
                 add_repeating_timer_ms(-3000, timer_callback, NULL, &timer);
                 break;
-            case ESTADO_AMARELO:
-            case ESTADO_PEDESTRE_A:
-            case ESTADO_PEDESTRE_B:
             default:
                 estado_atual = ESTADO_VERMELHO;
                 atualiza_semaforo(ESTADO_VERMELHO);
@@ -163,6 +197,29 @@ bool timer_callback(repeating_timer_t *rt) {
     }
 
     return false;
+}
+
+void setup_display() {
+    i2c_init(i2c1, ssd1306_i2c_clock * 1000);
+    gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
+    gpio_set_function(I2C_SCL, GPIO_FUNC_I2C);
+    gpio_pull_up(I2C_SDA);
+    gpio_pull_up(I2C_SCL);
+
+    ssd1306_init();
+
+    struct render_area area = {
+        .start_column = 0,
+        .end_column = ssd1306_width - 1,
+        .start_page = 0,
+        .end_page = ssd1306_n_pages - 1
+    };
+
+    calculate_render_area_buffer_length(&area);
+
+    uint8_t buffer[ssd1306_buffer_length];
+    memset(buffer, 0, ssd1306_buffer_length);
+    render_on_display(buffer, &area);
 }
 
 void setup_gpio() {
@@ -195,6 +252,7 @@ void setup_gpio() {
 int main() {
     stdio_init_all();
     setup_gpio();
+    setup_display();
 
     atualiza_semaforo(ESTADO_VERMELHO);
     add_repeating_timer_ms(-10000, timer_callback, NULL, &timer);
