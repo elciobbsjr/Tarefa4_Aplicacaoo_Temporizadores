@@ -1,3 +1,4 @@
+// Inclusão das bibliotecas necessárias
 #include <stdio.h>
 #include <string.h>
 #include "pico/stdlib.h"
@@ -6,25 +7,27 @@
 #include "hardware/timer.h"
 #include "inc/ssd1306.h"
 
-// --- Definição de Pinos ---
-#define LED_VERMELHO 13
-#define LED_VERDE    11
-#define BOTAO_A      5
-#define BOTAO_B      6
-#define BUZZER_A     21
-#define BUZZER_B     10
+// Definição dos pinos utilizados no projeto
+#define LED_VERMELHO 13 // LED representando o sinal vermelho
+#define LED_VERDE    11 // LED representando o sinal verde
+#define BOTAO_A      5  // Botão de pedestre (Centro)
+#define BOTAO_B      6  // Botão de pedestre (Bairro)
+#define BUZZER_A     21 // Buzzer A para alerta sonoro
+#define BUZZER_B     10 // Buzzer B alternativo para acessibilidade
+
+// Pinos para comunicação I2C com o display OLED
 const uint I2C_SDA = 14;
 const uint I2C_SCL = 15;
 
-// --- Configurações de Temporização (em milissegundos) ---
-#define TEMPO_VERMELHO     10000  // 10 segundos
-#define TEMPO_VERDE        10000  // 10 segundos
-#define TEMPO_AMARELO      3000   // 3 segundos
-#define TEMPO_TRAVESSIA    5000   // 5 segundos de travessia
-#define INTERVALO_CONTAGEM 1000   // 1 segundo entre cada decremento da contagem
-#define TEMPO_BUZZER       200    // Pulso de 200 ms no buzzer
+// Definição dos tempos de controle do semáforo e travessia
+#define TEMPO_VERMELHO     10000 // 10s no vermelho
+#define TEMPO_VERDE        10000 // 10s no verde
+#define TEMPO_AMARELO      3000  // 3s no amarelo
+#define TEMPO_TRAVESSIA    5000  // 5s de travessia para pedestre
+#define INTERVALO_CONTAGEM 1000  // 1s entre cada decremento da contagem
+#define TEMPO_BUZZER       200   // Buzzer ativo por 200ms
 
-// --- Estados do Semáforo ---
+// Enumeração dos estados possíveis do semáforo
 typedef enum { 
     ESTADO_VERMELHO, 
     ESTADO_VERDE, 
@@ -33,7 +36,7 @@ typedef enum {
     ESTADO_PEDESTRE_B 
 } estado_t;
 
-// --- Variáveis de Controle ---
+// Variáveis de controle de estado e lógica
 volatile estado_t estado_atual = ESTADO_VERMELHO;
 volatile bool pedido_A = false;
 volatile bool pedido_B = false;
@@ -42,43 +45,45 @@ volatile bool aguardando_fim_contagem = false;
 volatile bool usar_buzzer_a = true;
 volatile uint current_buzzer_gpio = BUZZER_A;
 
-// --- Timers ---
+// Instâncias dos temporizadores
 repeating_timer_t timer;
 repeating_timer_t contagem_timer;
 repeating_timer_t buzzer_timer;
 
-// --- Prototipação das Funções ---
+// Prototipação das funções utilizadas
 bool timer_callback(repeating_timer_t *rt);
 bool contagem_callback(repeating_timer_t *rt);
 void atualizar_display(const char* status, int contagem);
 
-// --- Função de Callback dos Botões ---
+// Callback dos botões de pedestre com prioridade para Botão A (Centro)
 void botao_callback(uint gpio, uint32_t events) {
-    // Priorizando Botão A (Centro)
     if (gpio == BOTAO_A) {
         pedido_A = true;
-        pedido_B = false; // Ignora qualquer pedido B pendente
-        printf("Botão A (Centro) acionado\n");
-    } else if (gpio == BOTAO_B && !pedido_A) { 
+        pedido_B = false; // Se A foi pressionado, B é ignorado
+        printf("Botao A (Centro) acionado\n");
+        atualizar_display("Botao A\nCentro", 0); // Exibe mensagem no display OLED
+    } else if (gpio == BOTAO_B && !pedido_A) {
         pedido_B = true;
-        printf("Botão B (Bairro) acionado\n");
+        printf("Botao B (Bairro) acionado\n");
+        atualizar_display("Botao B\nBairro", 0); // Exibe mensagem no display OLED
     }
 }
 
-// --- Controle do Buzzer ---
+// Callback para desligar o buzzer após o tempo configurado
 bool buzzer_off_callback(repeating_timer_t *rt) {
-    gpio_put(current_buzzer_gpio, 0);
+    gpio_put(current_buzzer_gpio, 0); // Desliga o buzzer atual
     return false;
 }
 
+// Função para emitir pulso sonoro alternando entre dois buzzers
 void buzzer_pulse() {
     current_buzzer_gpio = usar_buzzer_a ? BUZZER_A : BUZZER_B;
     usar_buzzer_a = !usar_buzzer_a;
-    gpio_put(current_buzzer_gpio, 1);
-    add_repeating_timer_ms(-TEMPO_BUZZER, buzzer_off_callback, NULL, &buzzer_timer);
+    gpio_put(current_buzzer_gpio, 1); // Liga o buzzer
+    add_repeating_timer_ms(-TEMPO_BUZZER, buzzer_off_callback, NULL, &buzzer_timer); // Desliga após 200ms
 }
 
-// --- Atualização do Display ---
+// Atualiza o display OLED com a mensagem de status e contagem regressiva, se houver
 void atualizar_display(const char* status, int contagem) {
     struct render_area area = {
         .start_column = 0,
@@ -89,20 +94,20 @@ void atualizar_display(const char* status, int contagem) {
 
     calculate_render_area_buffer_length(&area);
     uint8_t buffer[ssd1306_buffer_length];
-    memset(buffer, 0, ssd1306_buffer_length);
+    memset(buffer, 0, ssd1306_buffer_length); // Limpa o buffer antes de desenhar
 
-    ssd1306_draw_string(buffer, 0, 0, (char*)status);
+    ssd1306_draw_string(buffer, 0, 0, (char*)status); // Exibe o status na primeira linha
 
     if (contagem > 0) {
         char countdown_str[16];
         sprintf(countdown_str, "Tempo: %d", contagem);
-        ssd1306_draw_string(buffer, 0, 16, countdown_str);
+        ssd1306_draw_string(buffer, 0, 16, countdown_str); // Exibe a contagem na segunda linha
     }
 
-    render_on_display(buffer, &area);
-    printf("%s\n", status);
+    render_on_display(buffer, &area); // Renderiza no display OLED
+    printf("%s\n", status); // Também imprime no Monitor Serial
 }
-
+// Atualiza os LEDs e o display conforme o estado atual do semaforo
 void atualiza_semaforo(estado_t estado) {
     const char* display_status = "";
 
@@ -110,59 +115,60 @@ void atualiza_semaforo(estado_t estado) {
         case ESTADO_VERMELHO:
             gpio_put(LED_VERMELHO, 1);
             gpio_put(LED_VERDE, 0);
-            display_status = "Sinal: Vermelho";
+            display_status = "Sinal:\nVermelho";
             break;
         case ESTADO_VERDE:
             gpio_put(LED_VERMELHO, 0);
             gpio_put(LED_VERDE, 1);
-            display_status = "Sinal: Verde";
+            display_status = "Sinal:\nVerde";
             break;
         case ESTADO_AMARELO:
             gpio_put(LED_VERMELHO, 1);
-            gpio_put(LED_VERDE, 1); // Amarelo = Vermelho + Verde
-            display_status = "Sinal: Amarelo";
+            gpio_put(LED_VERDE, 1); // Amarelo é a combinação de vermelho + verde
+            display_status = "Sinal:\nAmarelo";
             break;
         case ESTADO_PEDESTRE_A:
             gpio_put(LED_VERMELHO, 1);
             gpio_put(LED_VERDE, 0);
-            display_status = "Travessia: Centro";
+            display_status = "Travessia\nCentro";
             break;
         case ESTADO_PEDESTRE_B:
             gpio_put(LED_VERMELHO, 1);
             gpio_put(LED_VERDE, 0);
-            display_status = "Travessia: Bairro";
+            display_status = "Travessia\nBairro";
             break;
     }
 
     atualizar_display(display_status, contagem_regressiva);
 }
 
-// --- Callback da Contagem Regressiva ---
+// Callback para a contagem regressiva de travessia do pedestre
 bool contagem_callback(repeating_timer_t *rt) {
     if (contagem_regressiva > 0) {
         printf("Contagem Regressiva: %d\n", contagem_regressiva);
-        buzzer_pulse();
+        buzzer_pulse(); // Emite aviso sonoro a cada segundo
 
         atualizar_display(
-            (estado_atual == ESTADO_PEDESTRE_A) ? "Travessia: Centro" : "Travessia: Bairro", 
+            (estado_atual == ESTADO_PEDESTRE_A) ? "Travessia\nCentro" : "Travessia\nBairro", 
             contagem_regressiva
         );
         contagem_regressiva--;
-        return true;
+        return true; // Continua a contagem
     } else {
         aguardando_fim_contagem = false;
-        add_repeating_timer_ms(-1, timer_callback, NULL, &timer);
+        add_repeating_timer_ms(-1, timer_callback, NULL, &timer); // Retorna ao ciclo normal
         return false;
     }
 }
 
-// --- Timer Principal de Controle do Semáforo ---
+// Callback principal que controla todo o fluxo do semaforo
 bool timer_callback(repeating_timer_t *rt) {
     static bool em_travessia = false;
 
     if (aguardando_fim_contagem) return false;
 
     if (!em_travessia && (pedido_A || pedido_B)) {
+        // Tratamento dos pedidos de travessia, priorizando o Botao A
         if (pedido_A) {
             estado_atual = ESTADO_AMARELO;
             atualiza_semaforo(ESTADO_AMARELO);
@@ -180,7 +186,6 @@ bool timer_callback(repeating_timer_t *rt) {
     } 
     else if (em_travessia) {
         atualiza_semaforo(estado_atual);
-
         add_repeating_timer_ms(-TEMPO_TRAVESSIA, timer_callback, NULL, &timer);
 
         contagem_regressiva = TEMPO_TRAVESSIA / 1000;
@@ -191,6 +196,7 @@ bool timer_callback(repeating_timer_t *rt) {
         em_travessia = false;
     } 
     else {
+        // Ciclo normal do semaforo
         switch (estado_atual) {
             case ESTADO_VERMELHO:
                 estado_atual = ESTADO_VERDE;
@@ -213,7 +219,7 @@ bool timer_callback(repeating_timer_t *rt) {
     return false;
 }
 
-// --- Inicialização do Display ---
+// Configuracao inicial do display OLED via I2C
 void setup_display() {
     i2c_init(i2c1, ssd1306_i2c_clock * 1000);
     gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
@@ -233,10 +239,10 @@ void setup_display() {
     calculate_render_area_buffer_length(&area);
     uint8_t buffer[ssd1306_buffer_length];
     memset(buffer, 0, ssd1306_buffer_length);
-    render_on_display(buffer, &area);
+    render_on_display(buffer, &area); // Limpa o display na inicializacao
 }
 
-// --- Inicialização dos GPIOs ---
+// Configuracao inicial dos GPIOs e interrupcoes dos botoes
 void setup_gpio() {
     gpio_init(LED_VERMELHO);
     gpio_set_dir(LED_VERMELHO, GPIO_OUT);
@@ -264,16 +270,16 @@ void setup_gpio() {
     gpio_set_irq_enabled(BOTAO_B, GPIO_IRQ_EDGE_FALL, true);
 }
 
-// --- Função Principal ---
+// Funcao principal onde tudo comeca
 int main() {
-    stdio_init_all();
-    setup_gpio();
-    setup_display();
+    stdio_init_all(); // Inicializa a comunicacao serial
+    setup_gpio();     // Configura GPIOs
+    setup_display();  // Configura display
 
-    atualiza_semaforo(ESTADO_VERMELHO);
-    add_repeating_timer_ms(-TEMPO_VERMELHO, timer_callback, NULL, &timer);
+    atualiza_semaforo(ESTADO_VERMELHO); // Inicia com o semaforo em vermelho
+    add_repeating_timer_ms(-TEMPO_VERMELHO, timer_callback, NULL, &timer); // Inicia o ciclo
 
     while (true) {
-        tight_loop_contents(); // Mantém o processador em espera, sem gastar CPU desnecessariamente
+        tight_loop_contents(); // Mantem a CPU em espera; tudo é controlado via interrupcoes e timers
     }
 }
